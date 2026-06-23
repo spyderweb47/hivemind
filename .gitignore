@@ -1,0 +1,11 @@
+# build output
+/hivemind
+*.tmp
+*.test
+.DS_Store
+
+# local runtime state
+.hivemind/
+
+# large local reference files (not distributed)
+*.pretty.js
