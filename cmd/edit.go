@@ -14,7 +14,7 @@ import (
 // newEditCmd implements the spec's `hivemind edit <agent>` — modify an agent after
 // setup and regenerate its CLAUDE.md / settings.json.
 func newEditCmd() *cobra.Command {
-	var model, role, addTool, rmTool, readsCSV string
+	var model, role, addTool, rmTool, readsCSV, permMode string
 	c := &cobra.Command{
 		Use:   "edit <agent>",
 		Short: "Modify an agent after setup (model/role/tools/reads) and re-scaffold it",
@@ -24,9 +24,31 @@ func newEditCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			defer lockConfig(p)()
+			if cfg, err = config.Load(p.ConfigPath()); err != nil { // re-read under the lock
+				return err
+			}
 			name := args[0]
 			if name == config.SupervisorName {
-				return fmt.Errorf("'supervisor' is fixed and cannot be edited")
+				// The supervisor has no workspace/tools/reads; only its model is tunable.
+				if role != "" || addTool != "" || rmTool != "" || cmd.Flags().Changed("reads") {
+					return fmt.Errorf("for the supervisor, only --model is editable")
+				}
+				if model == "" {
+					return fmt.Errorf("for the supervisor, pass --model (e.g. --model sonnet)")
+				}
+				if !config.ValidModel(model) {
+					return fmt.Errorf("invalid model %q (use %s, or a claude-… id)", model, strings.Join(config.KnownModels, "/"))
+				}
+				cfg.Supervisor.Model = model
+				if err := config.Save(p.ConfigPath(), cfg); err != nil {
+					return err
+				}
+				if err := scaffold.Agent(p, cfg, config.SupervisorName); err != nil {
+					return err
+				}
+				fmt.Printf("supervisor model set to %s\n", model)
+				return nil
 			}
 			a := cfg.FindAgent(name)
 			if a == nil {
@@ -34,6 +56,9 @@ func newEditCmd() *cobra.Command {
 			}
 			changed := false
 			if model != "" {
+				if !config.ValidModel(model) {
+					return fmt.Errorf("invalid model %q (use %s, or a claude-… id)", model, strings.Join(config.KnownModels, "/"))
+				}
 				a.Model = model
 				changed = true
 			}
@@ -64,8 +89,15 @@ func newEditCmd() *cobra.Command {
 				a.Tools = remove(a.Tools, rmTool)
 				changed = true
 			}
+			if permMode != "" {
+				if !config.ValidPermissionMode(permMode) {
+					return fmt.Errorf("invalid permission mode %q (use %s)", permMode, strings.Join(config.PermissionModes, "/"))
+				}
+				a.PermissionMode = permMode
+				changed = true
+			}
 			if !changed {
-				return fmt.Errorf("nothing to change — pass --model/--role/--reads/--add-tool/--remove-tool")
+				return fmt.Errorf("nothing to change — pass --model/--role/--reads/--add-tool/--remove-tool/--permission-mode")
 			}
 			if err := config.Save(p.ConfigPath(), cfg); err != nil {
 				return err
@@ -83,6 +115,7 @@ func newEditCmd() *cobra.Command {
 	c.Flags().StringVar(&addTool, "add-tool", "", "attach a registered tool")
 	c.Flags().StringVar(&rmTool, "remove-tool", "", "detach a tool")
 	c.Flags().StringVar(&readsCSV, "reads", "", "replace read-only paths (comma-separated)")
+	c.Flags().StringVar(&permMode, "permission-mode", "", "override this agent's permission mode (acceptEdits|plan|default|bypassPermissions)")
 	return c
 }
 

@@ -100,6 +100,15 @@ func applyDefaults(cfg *config.Project) {
 }
 
 func validate(cfg *config.Project) error {
+	if !config.ValidModel(cfg.Defaults.Model) {
+		return fmt.Errorf("invalid default model %q (use %s, or a claude-… id)", cfg.Defaults.Model, strings.Join(config.KnownModels, "/"))
+	}
+	if !config.ValidModel(cfg.Supervisor.Model) {
+		return fmt.Errorf("invalid supervisor model %q (use %s, or a claude-… id)", cfg.Supervisor.Model, strings.Join(config.KnownModels, "/"))
+	}
+	if cfg.Defaults.PermissionMode != "" && !config.ValidPermissionMode(cfg.Defaults.PermissionMode) {
+		return fmt.Errorf("invalid permission mode %q (use %s)", cfg.Defaults.PermissionMode, strings.Join(config.PermissionModes, "/"))
+	}
 	seen := map[string]bool{}
 	for i := range cfg.Agents {
 		a := &cfg.Agents[i]
@@ -113,6 +122,9 @@ func validate(cfg *config.Project) error {
 			return fmt.Errorf("duplicate agent %q", a.Name)
 		}
 		seen[a.Name] = true
+		if a.Model != "" && !config.ValidModel(a.Model) {
+			return fmt.Errorf("agent %q: invalid model %q (use %s, or a claude-… id)", a.Name, a.Model, strings.Join(config.KnownModels, "/"))
+		}
 		if a.Workspace == "" {
 			a.Workspace = a.Name
 		}

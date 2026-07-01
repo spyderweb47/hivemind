@@ -165,6 +165,116 @@ func Parse(path string) (Summary, error) {
 	return s, sc.Err()
 }
 
+// Item is one element of the recent conversation: a user prompt, an assistant text
+// block, or an assistant tool_use. A multi-chunk assistant turn yields ONE Item per
+// text block (unlike Summary, which keeps only the last) so the full reply is shown.
+type Item struct {
+	Role string // "user" | "assistant"
+	Kind string // "text" | "tool_use"
+	Text string // text content, or a short tool-input summary
+	Tool string // tool name (Kind == "tool_use")
+	TS   time.Time
+}
+
+// Recent streams a transcript and returns up to the last n conversation Items in
+// chronological order. It keeps every assistant text block (so chunked replies are
+// preserved) and skips tool_result user records (machine output, not human turns).
+// A missing file yields (nil, nil). Memory is bounded to n via a small ring.
+func Recent(path string, n int) ([]Item, error) {
+	if n <= 0 {
+		n = 1
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer f.Close()
+
+	ring := make([]Item, 0, n)
+	push := func(it Item) {
+		if len(ring) < n {
+			ring = append(ring, it)
+			return
+		}
+		copy(ring, ring[1:])
+		ring[n-1] = it
+	}
+
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
+	for sc.Scan() {
+		raw := strings.TrimSpace(sc.Text())
+		if raw == "" {
+			continue
+		}
+		var ln line
+		if json.Unmarshal([]byte(raw), &ln) != nil || len(ln.Message) == 0 {
+			continue
+		}
+		ts := parseTime(ln.Timestamp)
+		var m message
+		if json.Unmarshal(ln.Message, &m) != nil {
+			continue
+		}
+		switch m.Role {
+		case "user":
+			for _, t := range userTexts(m.Content) {
+				push(Item{Role: "user", Kind: "text", Text: t, TS: ts})
+			}
+		case "assistant":
+			var blocks []contentBlock
+			if json.Unmarshal(m.Content, &blocks) == nil {
+				for _, b := range blocks {
+					switch b.Type {
+					case "text":
+						if t := strings.TrimSpace(b.Text); t != "" {
+							push(Item{Role: "assistant", Kind: "text", Text: t, TS: ts})
+						}
+					case "tool_use":
+						push(Item{Role: "assistant", Kind: "tool_use", Tool: b.Name, Text: snippet(string(b.Input), 80), TS: ts})
+					}
+				}
+				continue
+			}
+			var str string
+			if json.Unmarshal(m.Content, &str) == nil {
+				if t := strings.TrimSpace(str); t != "" {
+					push(Item{Role: "assistant", Kind: "text", Text: t, TS: ts})
+				}
+			}
+		}
+	}
+	return ring, sc.Err()
+}
+
+// userTexts extracts the human-authored text from a user message, skipping
+// tool_result blocks (which are tool output fed back to the model, not a prompt).
+func userTexts(raw json.RawMessage) []string {
+	var str string
+	if json.Unmarshal(raw, &str) == nil {
+		if t := strings.TrimSpace(str); t != "" {
+			return []string{t}
+		}
+		return nil
+	}
+	var blocks []contentBlock
+	if json.Unmarshal(raw, &blocks) == nil {
+		var out []string
+		for _, b := range blocks {
+			if b.Type == "text" {
+				if t := strings.TrimSpace(b.Text); t != "" {
+					out = append(out, t)
+				}
+			}
+		}
+		return out
+	}
+	return nil
+}
+
 func (s *Summary) addUsage(u *usage) {
 	s.InputTokens += u.InputTokens
 	s.OutputTokens += u.OutputTokens

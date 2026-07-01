@@ -21,6 +21,8 @@ func newToolCmd() *cobra.Command {
 		toolActionCmd("restart", "Restart a service tool"),
 		newToolStatusCmd(),
 		toolAddCommand("add"),
+		newToolGendocCmd(),
+		newToolRegisterCmd(),
 		newToolAttachCmd(),
 	)
 	return c

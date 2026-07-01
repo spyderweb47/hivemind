@@ -78,15 +78,18 @@ func (p Project) ToolDir(name string) string { return filepath.Join(p.ToolsDir()
 // ToolStateDir holds runtime state (pid, started-at) for a service tool.
 func (p Project) ToolStateDir(name string) string { return filepath.Join(p.ToolsStateDir(), name) }
 
-// FindRoot walks up from start looking for a .hivemind directory and returns the
-// directory that contains it. Returns ("", false) if none is found.
+// FindRoot walks up from start looking for a hivemind *project* and returns the
+// directory that contains it. A project is identified by .hivemind/config.yaml —
+// NOT just a .hivemind directory, because the global state dir ~/.hivemind shares
+// that name and would otherwise make $HOME look like a project root (so running in
+// ~/anything/here would resolve to $HOME). Returns ("", false) if none is found.
 func FindRoot(start string) (string, bool) {
 	dir, err := filepath.Abs(start)
 	if err != nil {
 		return "", false
 	}
 	for {
-		if fi, err := os.Stat(filepath.Join(dir, ".hivemind")); err == nil && fi.IsDir() {
+		if fi, err := os.Stat(filepath.Join(dir, ".hivemind", "config.yaml")); err == nil && !fi.IsDir() {
 			return dir, true
 		}
 		parent := filepath.Dir(dir)

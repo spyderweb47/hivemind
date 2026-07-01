@@ -94,6 +94,16 @@ func loadState(p paths.Project, tool string) (state, bool) {
 	return st, true
 }
 
+// ServicePID returns the pane PID recorded for a service tool at start time, or 0
+// if unknown. Exposed so procscan can dedupe auto-discovered processes against
+// tmux-owned service tools without duplicating state.json parsing. Read-only.
+func ServicePID(p paths.Project, tool string) int {
+	if st, ok := loadState(p, tool); ok {
+		return st.PID
+	}
+	return 0
+}
+
 func saveState(p paths.Project, tool string, st state) error {
 	dir := p.ToolStateDir(tool)
 	if err := os.MkdirAll(dir, 0o755); err != nil {

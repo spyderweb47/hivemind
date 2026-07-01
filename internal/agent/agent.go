@@ -72,7 +72,7 @@ func ResolveTarget(p paths.Project, cfg *config.Project, name string) (Target, e
 		Name:           name,
 		SessionFile:    p.AgentSessionFile(name),
 		LockPath:       p.AgentLock(name),
-		PermissionMode: cfg.EffectivePermissionMode(),
+		PermissionMode: cfg.EffectivePermissionModeFor(name),
 	}
 	if name == config.SupervisorName {
 		t.Workspace = filepath.Join(p.HivemindDir(), "supervisor")
@@ -241,6 +241,26 @@ func RunTurn(p paths.Project, cfg *config.Project, r runner.Runner, name, prompt
 		SessionStarted: started,
 	}
 	return r.Send(spec, logf)
+}
+
+// RecentConversation returns up to the last n conversation items from an agent's
+// transcript (user prompts + every assistant text chunk + tool calls), for the
+// dashboard's scrollable detail view. Empty if the session hasn't started.
+func RecentConversation(p paths.Project, cfg *config.Project, name string, n int) []transcript.Item {
+	tgt, err := ResolveTarget(p, cfg, name)
+	if err != nil {
+		return nil
+	}
+	sid, err := session.ReadID(tgt.SessionFile)
+	if err != nil {
+		return nil
+	}
+	tpath, ok := transcript.Locate(paths.ClaudeProjectsDir(), sid)
+	if !ok {
+		return nil
+	}
+	items, _ := transcript.Recent(tpath, n)
+	return items
 }
 
 // Interrupt kills an agent's in-flight turn by signaling the detached __turn

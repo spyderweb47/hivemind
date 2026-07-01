@@ -46,6 +46,7 @@ const (
 	sRoot = iota
 	sProject
 	sDefModel
+	sSupModel
 	sPermMode
 	sAgentName
 	sWorkspace
@@ -83,31 +84,70 @@ type buildState struct {
 }
 
 type wizardModel struct {
-	step      int
-	mode      int
-	prompt    string
-	hint      string
-	input     textinput.Model
-	choices   []string
-	choiceIdx int
-	state     buildState
-	errMsg    string
-	confirmed bool
-	cancelled bool
-	width     int
+	step       int
+	mode       int
+	prompt     string
+	hint       string
+	input      textinput.Model
+	choices    []string
+	choiceDesc []string // parallel to choices; dim per-option help (optional)
+	choiceIdx  int
+	state      buildState
+	errMsg     string
+	confirmed  bool
+	cancelled  bool
+	width      int
 }
 
+// Theme — the same brand palette the live console uses (terracotta brand,
+// periwinkle accent), so setup and the dashboard feel like one tool.
 var (
-	wTitle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("231")).Background(lipgloss.Color("63")).Padding(0, 1)
-	wStep   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("75"))
-	wHint   = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	wErr    = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
-	wCursor = lipgloss.NewStyle().Foreground(lipgloss.Color("212")).Bold(true)
-	wSel    = lipgloss.NewStyle().Foreground(lipgloss.Color("212")).Bold(true)
-	wDim    = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	wPanel  = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("60")).Padding(0, 1)
-	wOK     = lipgloss.NewStyle().Foreground(lipgloss.Color("70"))
+	colBrand  = lipgloss.AdaptiveColor{Light: "#D77757", Dark: "#D77757"}
+	colAccent = lipgloss.AdaptiveColor{Light: "#5A6FD8", Dark: "#B1B9F9"}
+	colOKc    = lipgloss.AdaptiveColor{Light: "#2F9E44", Dark: "#4EBA65"}
+	colErrc   = lipgloss.AdaptiveColor{Light: "#E03E52", Dark: "#FF6B80"}
+	colDimc   = lipgloss.AdaptiveColor{Light: "#888888", Dark: "#999999"}
+	colSubtle = lipgloss.AdaptiveColor{Light: "#AAAAAA", Dark: "#666666"}
+
+	wBrand  = lipgloss.NewStyle().Foreground(colBrand).Bold(true)
+	wStep   = lipgloss.NewStyle().Bold(true).Foreground(colAccent)
+	wHint   = lipgloss.NewStyle().Foreground(colSubtle)
+	wErr    = lipgloss.NewStyle().Foreground(colErrc)
+	wCursor = lipgloss.NewStyle().Foreground(colAccent).Bold(true)
+	wSel    = lipgloss.NewStyle().Foreground(colAccent).Bold(true)
+	wDim    = lipgloss.NewStyle().Foreground(colDimc)
+	wPanel  = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colSubtle).Padding(0, 1)
+	wOK     = lipgloss.NewStyle().Foreground(colOKc)
 )
+
+// setup phases, for the breadcrumb (a coarse sense of progress through the wizard).
+var setupPhases = []string{"project", "models", "agents", "review"}
+
+func phaseOf(step int) int {
+	switch {
+	case step <= sProject:
+		return 0
+	case step <= sPermMode:
+		return 1
+	case step < sReview:
+		return 2
+	default:
+		return 3
+	}
+}
+
+// collapseHome renders a path with $HOME collapsed to ~ (for display).
+func collapseHome(p string) string {
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if p == home {
+			return "~"
+		}
+		if strings.HasPrefix(p, home+string(filepath.Separator)) {
+			return "~" + p[len(home):]
+		}
+	}
+	return p
+}
 
 func newWizardModel(defaultRoot string) wizardModel {
 	ti := textinput.New()
@@ -128,12 +168,40 @@ func newWizardModel(defaultRoot string) wizardModel {
 	return m.goTo(sRoot)
 }
 
+var (
+	modelDesc = map[string]string{
+		"sonnet": "balanced quality + speed",
+		"opus":   "most capable — slower, pricier",
+		"haiku":  "fast + cheap",
+	}
+	permDesc = map[string]string{
+		"acceptEdits":       "auto-apply edits inside each workspace",
+		"plan":              "propose changes; don't apply them",
+		"default":           "ask before each action",
+		"bypassPermissions": "⚠ skip ALL prompts (read-only deny rules still apply)",
+	}
+	toolTypeDesc = map[string]string{
+		"service": "long-running, health-checked process",
+		"command": "a CLI the agent invokes when needed",
+		"library": "a file the agent reads (no process)",
+	}
+)
+
+func descsFor(choices []string, table map[string]string) []string {
+	out := make([]string, len(choices))
+	for i, c := range choices {
+		out[i] = table[c]
+	}
+	return out
+}
+
 func (m wizardModel) Init() tea.Cmd { return textinput.Blink }
 
 // goTo configures the input/choices/prompt for a step.
 func (m wizardModel) goTo(step int) wizardModel {
 	m.step = step
 	m.errMsg = ""
+	m.choiceDesc = nil
 	m.input.Blur()
 	textVal := ""
 	switch step {
@@ -147,10 +215,16 @@ func (m wizardModel) goTo(step int) wizardModel {
 			textVal = filepath.Base(m.state.root)
 		}
 	case sDefModel:
-		m.choices, m.prompt, m.hint = []string{"sonnet", "opus", "haiku"}, "Default model for agents", ""
+		m.choices, m.prompt, m.hint = []string{"sonnet", "opus", "haiku"}, "Default model for agents", "each worker can override this later"
+		m.choiceDesc = descsFor(m.choices, modelDesc)
 		m.choiceIdx = 0
+	case sSupModel:
+		m.choices, m.prompt, m.hint = []string{"haiku", "sonnet", "opus"}, "Supervisor model", "the orchestrator that summarizes + routes work — change it later with /supervisor"
+		m.choiceDesc = descsFor(m.choices, modelDesc)
+		m.choiceIdx = indexOf(m.choices, orDefault(m.state.cfg.Supervisor.Model, "haiku"))
 	case sPermMode:
-		m.choices, m.prompt, m.hint = []string{"acceptEdits", "plan", "default"}, "Default permission mode", "acceptEdits auto-applies edits in each workspace"
+		m.choices, m.prompt, m.hint = config.PermissionModes, "Default permission mode", "per-agent override later: hivemind edit <agent> --permission-mode"
+		m.choiceDesc = descsFor(m.choices, permDesc)
 		m.choiceIdx = 0
 	case sAgentName:
 		m.prompt, m.hint = "Agent name", "leave blank when you're done adding agents"
@@ -161,11 +235,13 @@ func (m wizardModel) goTo(step int) wizardModel {
 		m.prompt, m.hint = "Role & responsibilities", "free text — becomes the agent's CLAUDE.md role"
 	case sAgentModel:
 		m.choices, m.prompt, m.hint = []string{"sonnet", "opus", "haiku"}, "Model tier for "+m.state.cur.Name, ""
+		m.choiceDesc = descsFor(m.choices, modelDesc)
 		m.choiceIdx = indexOf(m.choices, m.state.cfg.Defaults.Model)
 	case sToolName:
 		m.prompt, m.hint = "Attach a tool", "existing name to reuse, new name to register, or blank to stop"
 	case sToolType:
-		m.choices, m.prompt, m.hint = []string{"service", "command", "library"}, "Type of tool "+m.state.curTool.Name, "service=long-running, command=CLI, library=file"
+		m.choices, m.prompt, m.hint = []string{"service", "command", "library"}, "Type of tool "+m.state.curTool.Name, ""
+		m.choiceDesc = descsFor(m.choices, toolTypeDesc)
 		m.choiceIdx = 0
 	case sToolEntry:
 		if m.state.curTool.Type == config.ToolLibrary {
@@ -202,7 +278,7 @@ func (m wizardModel) goTo(step int) wizardModel {
 
 func isChoiceStep(step int) bool {
 	switch step {
-	case sDefModel, sPermMode, sAgentModel, sToolType, sAddAnother:
+	case sDefModel, sSupModel, sPermMode, sAgentModel, sToolType, sAddAnother:
 		return true
 	}
 	return false
@@ -270,6 +346,9 @@ func (m wizardModel) submit(val string) (tea.Model, tea.Cmd) {
 		return m.goTo(sDefModel), nil
 	case sDefModel:
 		m.state.cfg.Defaults.Model = val
+		return m.goTo(sSupModel), nil
+	case sSupModel:
+		m.state.cfg.Supervisor.Model = val
 		return m.goTo(sPermMode), nil
 	case sPermMode:
 		m.state.cfg.Defaults.PermissionMode = val
@@ -400,11 +479,11 @@ func (m wizardModel) View() string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString(wTitle.Render("hivemind setup"))
-	b.WriteString("  " + wDim.Render(m.state.root))
+	b.WriteString(wBrand.Render("✻ hivemind") + wDim.Render("  setup") + "  " + wDim.Render(collapseHome(m.state.root)))
+	b.WriteString("\n")
+	b.WriteString(m.breadcrumb())
 	b.WriteString("\n\n")
 
-	// breadcrumb
 	b.WriteString(wStep.Render("▸ " + m.prompt))
 	b.WriteString("\n")
 	if m.hint != "" {
@@ -416,11 +495,22 @@ func (m wizardModel) View() string {
 	if m.step == sReview {
 		b.WriteString(m.reviewBody())
 	} else if m.mode == modeChoice {
+		w := 0
+		for _, c := range m.choices {
+			if len(c) > w {
+				w = len(c)
+			}
+		}
 		for i, c := range m.choices {
+			label := c + strings.Repeat(" ", w-len(c))
+			desc := ""
+			if i < len(m.choiceDesc) && m.choiceDesc[i] != "" {
+				desc = "   " + wDim.Render(m.choiceDesc[i])
+			}
 			if i == m.choiceIdx {
-				b.WriteString(wCursor.Render("  › ") + wSel.Render(c) + "\n")
+				b.WriteString(wCursor.Render("  ❯ ") + wSel.Render(label) + desc + "\n")
 			} else {
-				b.WriteString("    " + c + "\n")
+				b.WriteString("    " + wDim.Render(label) + desc + "\n")
 			}
 		}
 	} else {
@@ -446,10 +536,27 @@ func (m wizardModel) View() string {
 	return b.String()
 }
 
+// breadcrumb renders the coarse setup phases with the current one highlighted.
+func (m wizardModel) breadcrumb() string {
+	cur := phaseOf(m.step)
+	parts := make([]string, len(setupPhases))
+	for i, ph := range setupPhases {
+		switch {
+		case i < cur:
+			parts[i] = wOK.Render("✓ " + ph)
+		case i == cur:
+			parts[i] = wStep.Render("● " + ph)
+		default:
+			parts[i] = wDim.Render("○ " + ph)
+		}
+	}
+	return "  " + strings.Join(parts, wDim.Render("  ·  "))
+}
+
 func (m wizardModel) fleetSummary() string {
 	var b strings.Builder
 	b.WriteString(wDim.Render("fleet so far") + "\n")
-	b.WriteString("supervisor " + wDim.Render("(haiku, fixed)") + "\n")
+	b.WriteString("supervisor " + wDim.Render("("+orDefault(m.state.cfg.Supervisor.Model, "haiku")+")") + "\n")
 	for _, a := range m.state.cfg.Agents {
 		line := fmt.Sprintf("%s (%s)", a.Name, orDefault(a.Model, m.state.cfg.Defaults.Model))
 		if len(a.Tools) > 0 {
@@ -480,9 +587,10 @@ func (m wizardModel) fleetSummary() string {
 
 func (m wizardModel) reviewBody() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "  project   %s\n", m.state.cfg.Project)
-	fmt.Fprintf(&b, "  defaults  model=%s perms=%s\n", m.state.cfg.Defaults.Model, m.state.cfg.Defaults.PermissionMode)
-	fmt.Fprintf(&b, "  agents    %d  (+ supervisor)\n", len(m.state.cfg.Agents))
+	fmt.Fprintf(&b, "  project     %s\n", m.state.cfg.Project)
+	fmt.Fprintf(&b, "  defaults    model=%s perms=%s\n", m.state.cfg.Defaults.Model, m.state.cfg.Defaults.PermissionMode)
+	fmt.Fprintf(&b, "  supervisor  %s\n", orDefault(m.state.cfg.Supervisor.Model, "haiku"))
+	fmt.Fprintf(&b, "  agents      %d  (+ supervisor)\n", len(m.state.cfg.Agents))
 	fmt.Fprintf(&b, "  tools     %d\n", len(m.state.cfg.Tools))
 	return b.String()
 }

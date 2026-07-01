@@ -25,9 +25,10 @@ func TestWizardBuildsAgentWithServiceTool(t *testing.T) {
 	m := newWizardModel("/tmp/proj")
 
 	m = drive(m,
-		enter(),                      // root: accept default /tmp/proj
+		enter(),                       // root: accept default /tmp/proj
 		clear(), typ("demo"), enter(), // project name (clear the pre-filled default first)
 		enter(),                 // default model: sonnet (choice idx 0)
+		enter(),                 // supervisor model: haiku (choice idx 0)
 		enter(),                 // permission mode: acceptEdits
 		typ("backend"), enter(), // agent name
 		enter(),                            // workspace: default "backend"
@@ -51,6 +52,9 @@ func TestWizardBuildsAgentWithServiceTool(t *testing.T) {
 	}
 	if m.state.cfg.Project != "demo" {
 		t.Errorf("project = %q, want demo", m.state.cfg.Project)
+	}
+	if m.state.cfg.Supervisor.Model != "haiku" {
+		t.Errorf("supervisor model = %q, want haiku (idx 0)", m.state.cfg.Supervisor.Model)
 	}
 	if got := len(m.state.cfg.Agents); got != 1 {
 		t.Fatalf("agents = %d, want 1", got)
@@ -80,9 +84,22 @@ func TestWizardBuildsAgentWithServiceTool(t *testing.T) {
 	}
 }
 
+func TestWizardSupervisorModelSelectable(t *testing.T) {
+	m := newWizardModel("/tmp/p")
+	// root, project, default model, then DOWN at the supervisor-model step to pick
+	// the 2nd option (sonnet, since the supervisor list is [haiku, sonnet, opus]).
+	m = drive(m, enter(), typ("p"), enter(), enter(), down(), enter())
+	if m.step != sPermMode {
+		t.Fatalf("expected to land on permission mode, got step %d", m.step)
+	}
+	if m.state.cfg.Supervisor.Model != "sonnet" {
+		t.Errorf("supervisor model = %q, want sonnet", m.state.cfg.Supervisor.Model)
+	}
+}
+
 func TestWizardRejectsReservedAndDuplicate(t *testing.T) {
 	m := newWizardModel("/tmp/p")
-	m = drive(m, enter(), typ("p"), enter(), enter(), enter()) // through to agent-name step
+	m = drive(m, enter(), typ("p"), enter(), enter(), enter(), enter()) // through to agent-name step (root, project, defModel, supModel, permMode)
 	if m.step != sAgentName {
 		t.Fatalf("expected to be at agent-name step, got %d", m.step)
 	}
@@ -95,7 +112,7 @@ func TestWizardRejectsReservedAndDuplicate(t *testing.T) {
 func TestWizardRejectsUnsafeReads(t *testing.T) {
 	m := newWizardModel("/tmp/p")
 	m = drive(m,
-		enter(), typ("p"), enter(), enter(), enter(), // basics
+		enter(), typ("p"), enter(), enter(), enter(), enter(), // basics (root, project, defModel, supModel, permMode)
 		typ("a"), enter(), enter(), typ("role"), enter(), enter(), // agent + workspace + role + model
 		enter(), // tool name blank -> reads step
 	)

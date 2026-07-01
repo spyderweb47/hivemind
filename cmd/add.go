@@ -30,12 +30,19 @@ func newAddAgentCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			defer lockConfig(p)()
+			if cfg, err = config.Load(p.ConfigPath()); err != nil { // re-read under the lock
+				return err
+			}
 			name := args[0]
 			if name == config.SupervisorName {
 				return fmt.Errorf("'supervisor' is reserved")
 			}
 			if cfg.FindAgent(name) != nil {
 				return fmt.Errorf("agent %q already exists", name)
+			}
+			if model != "" && !config.ValidModel(model) {
+				return fmt.Errorf("invalid model %q (use %s, or a claude-… id)", model, strings.Join(config.KnownModels, "/"))
 			}
 			a := config.Agent{Name: name, Workspace: name, Model: model, Role: role}
 			if workspace != "" {
@@ -61,6 +68,11 @@ func newAddAgentCmd() *cobra.Command {
 				return err
 			}
 			if err := scaffold.Agent(p, cfg, name); err != nil {
+				return err
+			}
+			// Refresh the supervisor's CLAUDE.md so it learns about the new agent
+			// (it enumerates the fleet).
+			if err := scaffold.Agent(p, cfg, config.SupervisorName); err != nil {
 				return err
 			}
 			fmt.Printf("added agent %q (workspace=%s model=%s tools=%v)\n", name, a.Workspace, cfg.EffectiveModel(&a), a.Tools)

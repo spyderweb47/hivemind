@@ -7,12 +7,28 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
 // Reserved agent name. The supervisor is fixed and not user-configurable.
 const SupervisorName = "supervisor"
+
+// KnownModels are the model tiers hivemind offers in setup and understands.
+var KnownModels = []string{"haiku", "sonnet", "opus"}
+
+// ValidModel reports whether m is an acceptable model: one of the known tiers, or
+// an explicit "claude-…" model id for advanced/pinned versions. Rejects typos so a
+// bad value can't be persisted to config and silently break later turns.
+func ValidModel(m string) bool {
+	for _, k := range KnownModels {
+		if m == k {
+			return true
+		}
+	}
+	return strings.HasPrefix(m, "claude-")
+}
 
 // Tool types.
 const (
@@ -75,6 +91,24 @@ type Agent struct {
 	// verbatim to the generated settings.json. This is how a blocked agent gets a
 	// capability that isn't backed by a hivemind tool entrypoint.
 	Allow []string `yaml:"allow,omitempty"`
+	// PermissionMode overrides the project default for THIS agent only (e.g.
+	// "bypassPermissions" for a trusted worker). Empty = use the project default.
+	PermissionMode string `yaml:"permission_mode,omitempty"`
+}
+
+// PermissionModes are the permission modes hivemind exposes (Claude Code's
+// permissions.defaultMode). bypassPermissions skips prompts but STILL enforces
+// deny rules, so read-only grants remain effective.
+var PermissionModes = []string{"acceptEdits", "plan", "default", "bypassPermissions"}
+
+// ValidPermissionMode reports whether m is one of the known permission modes.
+func ValidPermissionMode(m string) bool {
+	for _, k := range PermissionModes {
+		if m == k {
+			return true
+		}
+	}
+	return false
 }
 
 // Load reads and parses a config file.
@@ -149,12 +183,21 @@ func (p *Project) EffectiveModel(a *Agent) string {
 	return "sonnet"
 }
 
-// EffectivePermissionMode returns the agent permission mode (defaults only for now).
+// EffectivePermissionMode returns the project's default permission mode.
 func (p *Project) EffectivePermissionMode() string {
 	if p.Defaults.PermissionMode != "" {
 		return p.Defaults.PermissionMode
 	}
 	return "acceptEdits"
+}
+
+// EffectivePermissionModeFor returns the permission mode for one agent: its own
+// override if set, otherwise the project default. The supervisor uses the default.
+func (p *Project) EffectivePermissionModeFor(name string) string {
+	if a := p.FindAgent(name); a != nil && a.PermissionMode != "" {
+		return a.PermissionMode
+	}
+	return p.EffectivePermissionMode()
 }
 
 // AgentsUsingTool lists agent names that attach the given tool.

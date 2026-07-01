@@ -27,6 +27,10 @@ func newGrantCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			defer lockConfig(p)()
+			if cfg, err = config.Load(p.ConfigPath()); err != nil { // re-read under the lock
+				return err
+			}
 			name := args[0]
 			if name == config.SupervisorName || cfg.FindAgent(name) == nil {
 				return fmt.Errorf("unknown worker agent %q", name)
